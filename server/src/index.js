@@ -3,15 +3,15 @@ const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
+const path = require('path');
+const fs = require('fs');
 const { port, clientOrigin } = require('./config');
 const { connectDatabase } = require('./db');
 const { validateCreateBody } = require('./validators');
 const { generateCaseFromPremise } = require('./services/caseGenerator');
-const { createCaseRecord, getCaseRecord, toPublicCase, submitAccusation, toRevealPayload } = require('./caseStore');
+const { createCaseRecord, getCaseRecord, toPublicCase, submitAccusation, toRevealPayload, saveCompletion } = require('./caseStore');
 
 const app = express();
-
-connectDatabase().catch(() => undefined);
 
 const createRateLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
@@ -62,7 +62,7 @@ app.post('/api/v1/cases', createRateLimiter, async (req, res, next) => {
 
     const generatedCase = await generateCaseFromPremise(body.premise, body.settings);
 
-    const record = createCaseRecord({
+    const record = await createCaseRecord({
       premise: body.premise,
       settings: body.settings,
       generatedCase,
@@ -84,9 +84,9 @@ app.post('/api/v1/cases', createRateLimiter, async (req, res, next) => {
   }
 });
 
-app.get('/api/v1/cases/:caseId', (req, res, next) => {
+app.get('/api/v1/cases/:caseId', async (req, res, next) => {
   try {
-    const record = getCaseRecord(req.params.caseId);
+    const record = await getCaseRecord(req.params.caseId);
     if (!record) {
       return res.status(404).json({ error: { code: 'CASE_NOT_FOUND', message: 'This mystery is no longer available.', details: [] } });
     }
@@ -99,9 +99,9 @@ app.get('/api/v1/cases/:caseId', (req, res, next) => {
   }
 });
 
-app.post('/api/v1/cases/:caseId/accusation', (req, res, next) => {
+app.post('/api/v1/cases/:caseId/accusation', async (req, res, next) => {
   try {
-    const record = getCaseRecord(req.params.caseId);
+    const record = await getCaseRecord(req.params.caseId);
     if (!record) {
       return res.status(404).json({ error: { code: 'CASE_NOT_FOUND', message: 'This mystery is no longer available.', details: [] } });
     }
@@ -120,16 +120,16 @@ app.post('/api/v1/cases/:caseId/accusation', (req, res, next) => {
       return res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'That suspect is not part of this case.', details: [] } });
     }
 
-    const result = submitAccusation(record, suspectId);
+    const result = await submitAccusation(record, suspectId);
     return res.status(200).json({ case: result.case, reveal: result.reveal });
   } catch (error) {
     next(error);
   }
 });
 
-app.post('/api/v1/cases/:caseId/reveal', (req, res, next) => {
+app.post('/api/v1/cases/:caseId/reveal', async (req, res, next) => {
   try {
-    const record = getCaseRecord(req.params.caseId);
+    const record = await getCaseRecord(req.params.caseId);
     if (!record) {
       return res.status(404).json({ error: { code: 'CASE_NOT_FOUND', message: 'This mystery is no longer available.', details: [] } });
     }
@@ -140,6 +140,7 @@ app.post('/api/v1/cases/:caseId/reveal', (req, res, next) => {
         outcome: 'revealed',
         completedAt: new Date(),
       };
+      await saveCompletion(record);
     }
 
     return res.status(200).json({ case: toPublicCase(record), reveal: toRevealPayload(record) });
@@ -165,10 +166,22 @@ app.use((error, req, res, next) => {
   });
 });
 
-if (require.main === module) {
-  app.listen(port, () => {
-    console.log(`AI Mystery Room API listening on port ${port}`);
+const clientDist = path.resolve(__dirname, '../../client/dist');
+if (fs.existsSync(clientDist)) {
+  app.use(express.static(clientDist));
+  app.get('*', (req, res, next) => {
+    if (req.path.startsWith('/api/')) return next();
+    return res.sendFile(path.join(clientDist, 'index.html'));
   });
+}
+
+if (require.main === module) {
+  connectDatabase()
+    .then(() => app.listen(port, () => console.log(`AI Mystery Room listening on port ${port}`)))
+    .catch((error) => {
+      console.error('Startup failed:', error.message);
+      process.exit(1);
+    });
 }
 
 module.exports = app;

@@ -1,13 +1,14 @@
 const crypto = require('crypto');
 const { caseTtlDays } = require('./config');
+const Case = require('./models/Case');
 
 const caseMap = new Map();
 
-function createCaseRecord({ premise, settings, generatedCase }) {
+function buildCaseRecord({ premise, settings, generatedCase }) {
   const id = crypto.randomBytes(12).toString('hex');
   const now = new Date();
   const record = {
-    id,
+    caseId: id,
     schemaVersion: 1,
     status: 'ready',
     createdAt: now,
@@ -30,11 +31,29 @@ function createCaseRecord({ premise, settings, generatedCase }) {
     completion: null,
   };
 
-  caseMap.set(id, record);
   return record;
 }
 
-function getCaseRecord(caseId) {
+function serializeCase(record) {
+  if (!record) return null;
+  const value = typeof record.toObject === 'function' ? record.toObject() : record;
+  return { ...value, id: value.caseId || value.id };
+}
+
+async function createCaseRecord(input) {
+  const record = buildCaseRecord(input);
+  if (Case.db.readyState === 1) {
+    return serializeCase(await Case.create(record));
+  }
+  caseMap.set(record.caseId, record);
+  return serializeCase(record);
+}
+
+async function getCaseRecord(caseId) {
+  if (Case.db.readyState === 1) {
+    const record = await Case.findOne({ caseId, expiresAt: { $gt: new Date() } }).lean();
+    return serializeCase(record);
+  }
   const record = caseMap.get(caseId);
   if (!record) return null;
 
@@ -43,12 +62,12 @@ function getCaseRecord(caseId) {
     return null;
   }
 
-  return record;
+  return serializeCase(record);
 }
 
 function toPublicCase(record) {
   return {
-    id: record.id,
+    id: record.caseId || record.id,
     title: record.playerFacing.title,
     briefing: record.playerFacing.briefing,
     setting: record.playerFacing.setting,
@@ -73,7 +92,15 @@ function toRevealPayload(record) {
   };
 }
 
-function submitAccusation(record, suspectId) {
+async function saveCompletion(record) {
+  if (Case.db.readyState === 1) {
+    await Case.updateOne({ caseId: record.caseId || record.id }, { $set: { completion: record.completion } });
+  } else {
+    caseMap.set(record.caseId || record.id, record);
+  }
+}
+
+async function submitAccusation(record, suspectId) {
   if (record.completion) {
     return { status: 'already-completed', case: toPublicCase(record), reveal: toRevealPayload(record) };
   }
@@ -89,6 +116,7 @@ function submitAccusation(record, suspectId) {
     outcome: isCorrect ? 'correct' : 'incorrect',
     completedAt: new Date(),
   };
+  await saveCompletion(record);
 
   return {
     status: 'completed',
@@ -102,5 +130,6 @@ module.exports = {
   getCaseRecord,
   toPublicCase,
   submitAccusation,
+  saveCompletion,
   toRevealPayload,
 };

@@ -28,6 +28,7 @@ const clueAnalysisSchema = new mongoose.Schema({
 }, { _id: false });
 
 const caseSchema = new mongoose.Schema({
+  caseId: { type: String, required: true, unique: true, index: true },
   schemaVersion: { type: Number, default: 1 },
   status: { type: String, enum: ['ready', 'completed'], default: 'ready' },
   createdAt: { type: Date, default: Date.now },
